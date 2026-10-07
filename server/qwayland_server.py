@@ -27,6 +27,7 @@ Wire protocol (little-endian), every message is: u8 type, u32 length, payload.
 
 import argparse
 import asyncio
+import ctypes
 import json
 import logging
 import os
@@ -54,6 +55,12 @@ HEADER = struct.Struct("<BI")
 MAX_PAYLOAD = 64 * 1024 * 1024
 
 
+def _die_with_parent():
+    """Child processes (helper, mDNS advertiser) must not outlive the server."""
+    PR_SET_PDEATHSIG = 1
+    ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
 class VoutHelper:
     """Drives the qw-vout helper process (virtual outputs + input injection)."""
 
@@ -68,7 +75,8 @@ class VoutHelper:
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
-            VOUT_HELPER, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
+            VOUT_HELPER, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            preexec_fn=_die_with_parent,
         )
         self.ready = asyncio.get_running_loop().create_future()
         asyncio.create_task(self._read_events())
@@ -444,6 +452,7 @@ class Server:
         self.avahi = await asyncio.create_subprocess_exec(
             "avahi-publish-service", name, "_qwayland._tcp", str(self.args.port), "proto=1",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            preexec_fn=_die_with_parent,
         )
 
     async def run(self):
