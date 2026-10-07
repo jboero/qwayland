@@ -1,0 +1,5 @@
+server/vout/gen/
+server/vout/qw-vout
+client/build/
+__pycache__/
+*.pyc
