@@ -342,11 +342,14 @@ class Session:
         args = self.server.args
         width = int(hello.get("width") or args.width)
         height = int(hello.get("height") or args.height)
+        # Keep within what NVENC H.264 and the headset decoder handle.
+        width = min(max(width, 320), 4096)
+        height = min(max(height, 240), 4096)
         width, height = width - width % 2, height - height % 2
         self.vid = self.server.allocate_id(hello.get("panel"))
         log.info("%s: creating virtual display %d (%dx%d)", self.peer, self.vid, width, height)
 
-        scale = float(hello.get("scale") or args.scale)
+        scale = min(max(float(hello.get("scale") or args.scale), 0.5), 4.0)
         node = await self.server.vout.create(self.vid, width, height, scale)
         self.encoder = Encoder(node, width, height, args.bitrate, args.fps, self._on_frame)
         config = {"width": width, "height": height, "codec": "h264",
