@@ -15,8 +15,9 @@
 //   button <evdev-code> <0|1>
 //   axis <0=vertical|1=horizontal> <value>
 //   key <evdev-code> <0|1>
+//   keysym <xkb-keysym> <0|1>    needs fake_input v6 (text from virtual keyboards)
 // Events on stdout:
-//   ready
+//   ready <screencast-version> <fake-input-version>
 //   node <id> <pipewire-node-id>
 //   geom <id> <x> <y> <w> <h> <output-name>
 //   failed <id> <message>
@@ -186,7 +187,7 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name, 
                                       version < 5 ? version : 5);
     } else if (!strcmp(iface, org_kde_kwin_fake_input_interface.name)) {
         fake_input = wl_registry_bind(reg, name, &org_kde_kwin_fake_input_interface,
-                                      version < 4 ? version : 4);
+                                      version < 6 ? version : 6);
     } else if (!strcmp(iface, zxdg_output_manager_v1_interface.name)) {
         xdg_output_manager = wl_registry_bind(reg, name, &zxdg_output_manager_v1_interface,
                                               version < 3 ? version : 3);
@@ -311,6 +312,8 @@ static void cmd_motion(int id, double nx, double ny)
 
 static void handle_line(char *line)
 {
+    if (!*line)
+        return;
     int id, a, b;
     double x, y;
     if (sscanf(line, "create %d %d %d %lf", &id, &a, &b, &x) == 4)
@@ -323,7 +326,10 @@ static void handle_line(char *line)
         org_kde_kwin_fake_input_button(fake_input, a, b);
     else if (fake_input && sscanf(line, "axis %d %lf", &a, &x) == 2)
         org_kde_kwin_fake_input_axis(fake_input, a, wl_fixed_from_double(x));
-    else if (fake_input && sscanf(line, "key %d %d", &a, &b) == 2)
+    else if (fake_input && sscanf(line, "keysym %d %d", &a, &b) == 2) {
+        if (org_kde_kwin_fake_input_get_version(fake_input) >= 6)
+            org_kde_kwin_fake_input_keyboard_keysym(fake_input, a, b);
+    } else if (fake_input && sscanf(line, "key %d %d", &a, &b) == 2)
         org_kde_kwin_fake_input_keyboard_key(fake_input, a, b);
     else
         emit("error bad command: %s", line);
@@ -351,7 +357,8 @@ int main(void)
     } else {
         emit("error org_kde_kwin_fake_input not available, input forwarding disabled");
     }
-    emit("ready");
+    emit("ready %u %u", zkde_screencast_unstable_v1_get_version(screencast),
+         fake_input ? org_kde_kwin_fake_input_get_version(fake_input) : 0);
 
     char buf[4096];
     size_t used = 0;

@@ -28,7 +28,7 @@ final class StreamClient {
 
     static final int MSG_CONFIG = 0x01, MSG_VIDEO = 0x02, MSG_PONG = 0x03, MSG_ERROR = 0x04;
     static final int MSG_HELLO = 0x10, MSG_POINTER = 0x11, MSG_BUTTON = 0x12, MSG_SCROLL = 0x13,
-            MSG_KEY = 0x14, MSG_KEYFRAME = 0x15, MSG_PING = 0x16;
+            MSG_KEY = 0x14, MSG_KEYFRAME = 0x15, MSG_PING = 0x16, MSG_TEXT = 0x17;
 
     interface Listener {
         void onStatus(String status);
@@ -128,6 +128,15 @@ final class StreamClient {
         ByteBuffer b = payload(5);
         b.putInt(evdevCode).put((byte) (pressed ? 1 : 0));
         send(MSG_KEY, b);
+    }
+
+    void sendText(String text) {
+        send(MSG_TEXT, text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    void tapKey(int evdevCode) {
+        sendKey(evdevCode, true);
+        sendKey(evdevCode, false);
     }
 
     private static ByteBuffer payload(int size) {

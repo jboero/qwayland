@@ -16,6 +16,7 @@ Wire protocol (little-endian), every message is: u8 type, u32 length, payload.
     0x14 KEY       u32 evdev code, u8 pressed
     0x15 KEYFRAME  (empty)
     0x16 PING      u64 client timestamp
+    0x17 TEXT      UTF-8 text typed on a virtual keyboard
   server -> client
     0x01 CONFIG    JSON {"width": int, "height": int, "codec": "h264", "name": str}
     0x02 VIDEO     u64 pts_us, u8 flags (bit0 keyframe), Annex-B access unit
@@ -42,11 +43,11 @@ from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
 log = logging.getLogger("qwayland")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))
 VOUT_HELPER = os.path.join(HERE, "vout", "qw-vout")
 
 MSG_CONFIG, MSG_VIDEO, MSG_PONG, MSG_ERROR = 0x01, 0x02, 0x03, 0x04
-MSG_HELLO, MSG_POINTER, MSG_BUTTON, MSG_SCROLL, MSG_KEY, MSG_KEYFRAME, MSG_PING = range(0x10, 0x17)
+MSG_HELLO, MSG_POINTER, MSG_BUTTON, MSG_SCROLL, MSG_KEY, MSG_KEYFRAME, MSG_PING, MSG_TEXT = range(0x10, 0x18)
 
 HEADER = struct.Struct("<BI")
 MAX_PAYLOAD = 64 * 1024 * 1024
@@ -142,6 +143,25 @@ class VoutHelper:
 
     def key(self, code, pressed):
         self._send(f"key {code} {1 if pressed else 0}")
+
+    def text(self, text):
+        for ch in text:
+            sym = keysym_for(ch)
+            self._send(f"keysym {sym} 1")
+            self._send(f"keysym {sym} 0")
+
+
+SPECIAL_KEYSYMS = {"\n": 0xFF0D, "\r": 0xFF0D, "\t": 0xFF09, "\b": 0xFF08, "\x1b": 0xFF1B}
+
+
+def keysym_for(ch):
+    """XKB keysym for a character (Latin-1 maps directly, the rest via Unicode)."""
+    if ch in SPECIAL_KEYSYMS:
+        return SPECIAL_KEYSYMS[ch]
+    cp = ord(ch)
+    if 0x20 <= cp <= 0x7E or 0xA0 <= cp <= 0xFF:
+        return cp
+    return 0x01000000 | cp
 
 
 class Encoder:
@@ -305,6 +325,8 @@ class Session:
             elif mtype == MSG_KEY:
                 code, pressed = struct.unpack("<IB", payload)
                 vout.key(code, pressed)
+            elif mtype == MSG_TEXT:
+                vout.text(payload.decode("utf-8", "replace"))
             elif mtype == MSG_KEYFRAME:
                 self.encoder.request_keyframe()
             elif mtype == MSG_PING:

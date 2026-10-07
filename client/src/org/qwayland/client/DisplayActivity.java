@@ -19,8 +19,10 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
@@ -42,6 +44,8 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
     private SurfaceView surfaceView;
     private TextView status;
     private Button addButton;
+    private LinearLayout toolbar;
+    private KeyboardSink keyboardSink;
 
     private StreamClient client;
     private String host;
@@ -79,11 +83,30 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         root.addView(status, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
 
+        keyboardSink = new KeyboardSink(this, new KeyboardSink.Target() {
+            @Override
+            public void onText(String text) {
+                if (client != null) client.sendText(text);
+            }
+
+            @Override
+            public void onKey(int evdevCode) {
+                if (client != null) client.tapKey(evdevCode);
+            }
+        });
+        root.addView(keyboardSink, new FrameLayout.LayoutParams(1, 1));
+
+        toolbar = new LinearLayout(this);
+        toolbar.setAlpha(0.85f);
+        Button keyboardButton = new Button(this);
+        keyboardButton.setText("keyboard");
+        keyboardButton.setOnClickListener(v -> toggleKeyboard());
         addButton = new Button(this);
         addButton.setText("+ display");
-        addButton.setAlpha(0.85f);
         addButton.setOnClickListener(v -> openAnotherDisplay());
-        root.addView(addButton, new FrameLayout.LayoutParams(
+        toolbar.addView(keyboardButton);
+        toolbar.addView(addButton);
+        root.addView(toolbar, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END));
 
         root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> fitSurface());
@@ -154,6 +177,17 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         if (client != null) {
             client.stop();
             client = null;
+        }
+    }
+
+    private void toggleKeyboard() {
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (keyboardSink.hasFocus() && imm.isActive(keyboardSink)) {
+            imm.hideSoftInputFromWindow(keyboardSink.getWindowToken(), 0);
+            keyboardSink.clearFocus();
+        } else {
+            keyboardSink.requestFocus();
+            imm.showSoftInput(keyboardSink, InputMethodManager.SHOW_IMPLICIT);
         }
     }
 
@@ -267,7 +301,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
     public void onFirstFrame() {
         ui.post(() -> {
             status.setVisibility(View.GONE);
-            addButton.setAlpha(0.35f);
+            toolbar.setAlpha(0.35f);
         });
     }
 
@@ -276,7 +310,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         ui.post(() -> {
             client = null;
             setStatus(reason + "\nReconnecting…");
-            addButton.setAlpha(0.85f);
+            toolbar.setAlpha(0.85f);
             ui.postDelayed(this::maybeConnect, 2000);
         });
     }
