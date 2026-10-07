@@ -41,6 +41,7 @@ final class StreamClient {
     private final int port;
     private final int width;
     private final int height;
+    private final String panelId;
     private final Surface surface;
     private final Listener listener;
 
@@ -65,11 +66,13 @@ final class StreamClient {
     private boolean pointerPending;
     private float pendingX, pendingY;
 
-    StreamClient(String host, int port, int width, int height, Surface surface, Listener listener) {
+    StreamClient(String host, int port, int width, int height, String panelId, Surface surface,
+                 Listener listener) {
         this.host = host;
         this.port = port;
         this.width = width;
         this.height = height;
+        this.panelId = panelId;
         this.surface = surface;
         this.listener = listener;
     }
@@ -186,6 +189,7 @@ final class StreamClient {
             hello.put("proto", 1);
             hello.put("width", width);
             hello.put("height", height);
+            hello.put("panel", panelId);
             send(MSG_HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
             listener.onStatus("Waiting for display…");
 

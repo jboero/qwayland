@@ -9,7 +9,8 @@ when the panel disconnects.
 
 Wire protocol (little-endian), every message is: u8 type, u32 length, payload.
   client -> server
-    0x10 HELLO     JSON {"proto": 1, "width": int, "height": int, "scale": float (optional)}
+    0x10 HELLO     JSON {"proto": 1, "width": int, "height": int,
+                         "scale": float (optional), "panel": str (optional, stable panel id)}
     0x11 POINTER   f32 nx, f32 ny             normalized position on the display
     0x12 BUTTON    u32 evdev code, u8 pressed
     0x13 SCROLL    u8 axis (0 vertical, 1 horizontal), f32 value
@@ -61,6 +62,9 @@ class VoutHelper:
         self.waiters = {}  # (event, id) -> Future
         self.geometry = {}
         self.ready = None
+        # Displays created concurrently (e.g. panels reconnecting together)
+        # must not compute their positions from each other's stale layout.
+        self.layout_lock = asyncio.Lock()
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
@@ -112,24 +116,56 @@ class VoutHelper:
         node = int(await asyncio.wait_for(node, 5))
         try:
             await asyncio.wait_for(geom, 2)
-            await self._apply_scale(vid, scale)
+            await self.relayout({vid: scale})
         except asyncio.TimeoutError:
             log.warning("no geometry for display %d; input mapping may be off", vid)
         return node
 
-    async def _apply_scale(self, vid, scale):
-        # KScreen remembers per-output settings by name and may pick its own
-        # scale for a new virtual output, so set the requested one explicitly.
-        name = self.geometry[vid][4]
+    async def relayout(self, scales=None):
+        """Pack all qwayland displays, in id order, right of the real monitors.
+
+        KScreen remembers per-output settings by name and lays new outputs out
+        from possibly stale geometry, so positions (and the requested scale of
+        new displays) are always set explicitly.
+        """
         if not shutil.which("kscreen-doctor"):
             return
-        proc = await asyncio.create_subprocess_exec(
-            "kscreen-doctor", f"output.{name}.scale.{scale:g}",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await proc.wait()
+        async with self.layout_lock:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "kscreen-doctor", "-j", stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL)
+                outputs = json.loads((await proc.communicate())[0])["outputs"]
+            except (ValueError, KeyError) as e:
+                log.warning("cannot read screen layout: %s", e)
+                return
+            scales = scales or {}
+            ours = {v[4]: vid for vid, v in self.geometry.items()}
+            right, virtual = 0, []
+            for o in outputs:
+                if not o.get("enabled"):
+                    continue
+                if o.get("name") in ours:
+                    virtual.append(o)
+                    continue
+                right = max(right, o["pos"]["x"] + _logical_width(o))
+            args = []
+            for o in sorted(virtual, key=lambda o: ours[o["name"]]):
+                name, vid = o["name"], ours[o["name"]]
+                scale = scales.get(vid, o.get("scale") or 1)
+                if vid in scales:
+                    args.append(f"output.{name}.scale.{scale:g}")
+                args.append(f"output.{name}.position.{right},0")
+                right += _logical_width(o, scale)
+            if args:
+                proc = await asyncio.create_subprocess_exec(
+                    "kscreen-doctor", *args,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await proc.wait()
 
     def close(self, vid):
-        self.geometry.pop(vid, None)
+        if self.geometry.pop(vid, None):
+            asyncio.get_running_loop().create_task(self.relayout())
         self._send(f"close {vid}")
 
     def motion(self, vid, nx, ny):
@@ -149,6 +185,15 @@ class VoutHelper:
             sym = keysym_for(ch)
             self._send(f"keysym {sym} 1")
             self._send(f"keysym {sym} 0")
+
+
+def _logical_width(output, scale=None):
+    """Width of a KScreen output in global (logical) coordinates."""
+    mode = next((m for m in output.get("modes", []) if m["id"] == output.get("currentModeId")), None)
+    size = mode["size"] if mode else output.get("size", {"width": 0, "height": 0})
+    # KScreen rotation enum: 2 = left (90 degrees), 8 = right (270 degrees)
+    width = size["height"] if output.get("rotation") in (2, 8) else size["width"]
+    return round(width / (scale or output.get("scale") or 1))
 
 
 SPECIAL_KEYSYMS = {"\n": 0xFF0D, "\r": 0xFF0D, "\t": 0xFF09, "\b": 0xFF08, "\x1b": 0xFF1B}
@@ -290,7 +335,7 @@ class Session:
         width = int(hello.get("width") or args.width)
         height = int(hello.get("height") or args.height)
         width, height = width - width % 2, height - height % 2
-        self.vid = self.server.allocate_id()
+        self.vid = self.server.allocate_id(hello.get("panel"))
         log.info("%s: creating virtual display %d (%dx%d)", self.peer, self.vid, width, height)
 
         scale = float(hello.get("scale") or args.scale)
@@ -350,15 +395,22 @@ class Server:
         self.args = args
         self.vout = VoutHelper()
         self.ids = set()
+        self.panels = {}  # stable panel id -> display id it used last
         self.sessions = set()
         self.loop = None
         self.avahi = None
 
-    def allocate_id(self):
-        vid = 1
-        while vid in self.ids:
-            vid += 1
+    def allocate_id(self, panel=None):
+        # Give a reconnecting panel its previous display number so it keeps
+        # the same output name (and KScreen settings) and position.
+        vid = self.panels.get(panel)
+        if vid is None or vid in self.ids:
+            vid = 1
+            while vid in self.ids or (vid in self.panels.values() and panel not in self.panels):
+                vid += 1
         self.ids.add(vid)
+        if panel:
+            self.panels[panel] = vid
         return vid
 
     def release_id(self, vid):

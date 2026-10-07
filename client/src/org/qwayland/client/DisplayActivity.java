@@ -36,6 +36,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
     static final String EXTRA_PORT = "port";
     static final String EXTRA_WIDTH = "width";
     static final String EXTRA_HEIGHT = "height";
+    static final String EXTRA_PANEL = "panel";
 
     private static final int BTN_LEFT = 0x110, BTN_RIGHT = 0x111, BTN_MIDDLE = 0x112;
 
@@ -51,6 +52,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
     private String host;
     private int port = 7710;
     private int reqWidth, reqHeight;
+    private String panelId;
     private int streamWidth, streamHeight;
     private boolean surfaceReady;
     private boolean resumed;
@@ -68,6 +70,11 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         port = i.getIntExtra(EXTRA_PORT, port);
         reqWidth = i.getIntExtra(EXTRA_WIDTH, 2560);
         reqHeight = i.getIntExtra(EXTRA_HEIGHT, 1440);
+        // The first panel is "main"; extra panels get a random id that
+        // survives activity recreation, so each keeps its display slot.
+        panelId = savedInstanceState != null ? savedInstanceState.getString(EXTRA_PANEL) : null;
+        if (panelId == null) panelId = i.getStringExtra(EXTRA_PANEL);
+        if (panelId == null) panelId = "main";
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -113,6 +120,12 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         setContentView(root);
         installInputHandlers();
         setStatus("Looking for a qwayland server…");
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putString(EXTRA_PANEL, panelId);
     }
 
     @Override
@@ -169,7 +182,8 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
             startDiscovery();
             return;
         }
-        client = new StreamClient(host, port, reqWidth, reqHeight, surfaceView.getHolder().getSurface(), this);
+        client = new StreamClient(host, port, reqWidth, reqHeight, panelId,
+                surfaceView.getHolder().getSurface(), this);
         client.start();
     }
 
@@ -198,6 +212,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         i.putExtra(EXTRA_PORT, port);
         i.putExtra(EXTRA_WIDTH, reqWidth);
         i.putExtra(EXTRA_HEIGHT, reqHeight);
+        i.putExtra(EXTRA_PANEL, java.util.UUID.randomUUID().toString());
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         startActivity(i);
     }
