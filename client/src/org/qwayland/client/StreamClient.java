@@ -7,6 +7,7 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.view.Surface;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
@@ -28,7 +29,8 @@ final class StreamClient {
 
     static final int MSG_CONFIG = 0x01, MSG_VIDEO = 0x02, MSG_PONG = 0x03, MSG_ERROR = 0x04;
     static final int MSG_HELLO = 0x10, MSG_POINTER = 0x11, MSG_BUTTON = 0x12, MSG_SCROLL = 0x13,
-            MSG_KEY = 0x14, MSG_KEYFRAME = 0x15, MSG_PING = 0x16, MSG_TEXT = 0x17;
+            MSG_KEY = 0x14, MSG_KEYFRAME = 0x15, MSG_PING = 0x16, MSG_TEXT = 0x17,
+            MSG_DECODER_ERROR = 0x18;
 
     interface Listener {
         void onStatus(String status);
@@ -49,6 +51,8 @@ final class StreamClient {
     private Socket socket;
     private OutputStream out;
     private MediaCodec codec;
+    private volatile String currentCodec;
+    private volatile boolean decodedAny;
     private Thread readThread;
     private Thread drainThread;
 
@@ -190,6 +194,7 @@ final class StreamClient {
             hello.put("width", width);
             hello.put("height", height);
             hello.put("panel", panelId);
+            hello.put("codecs", new JSONArray(Decoders.supported()));
             send(MSG_HELLO, hello.toString().getBytes(StandardCharsets.UTF_8));
             listener.onStatus("Waiting for display…");
 
@@ -207,8 +212,16 @@ final class StreamClient {
                 if (type == MSG_CONFIG) {
                     JSONObject cfg = new JSONObject(new String(body, StandardCharsets.UTF_8));
                     int w = cfg.getInt("width"), hgt = cfg.getInt("height");
-                    startCodec(w, hgt);
-                    listener.onConfigured(w, hgt, cfg.optString("name", host));
+                    String codecName = cfg.optString("codec", "h264");
+                    try {
+                        startCodec(w, hgt, codecName);
+                        listener.onConfigured(w, hgt, cfg.optString("name", host));
+                    } catch (Exception e) {
+                        // Ask the server for its next codec; a new CONFIG follows.
+                        Log.w(TAG, "cannot start " + codecName + " decoder", e);
+                        stopCodec();
+                        reportDecoderError(codecName + ": " + e);
+                    }
                 } else if (type == MSG_VIDEO && codec != null) {
                     ByteBuffer v = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN);
                     long ptsUs = v.getLong();
@@ -261,17 +274,31 @@ final class StreamClient {
         send(MSG_PING, ping);
     }
 
-    private void startCodec(int w, int h) throws IOException {
+    private void reportDecoderError(String reason) {
+        send(MSG_DECODER_ERROR, reason.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void startCodec(int w, int h, String codecName) throws IOException {
         stopCodec();
-        MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h);
+        String mime = Decoders.mimeFor(codecName);
+        MediaFormat fmt = MediaFormat.createVideoFormat(mime, w, h);
         fmt.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
         fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); // realtime
         fmt.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE);
         fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, w * h);
-        codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-        codec.configure(fmt, surface, null, 0);
-        codec.start();
-        final MediaCodec c = codec;
+        String name = Decoders.bestDecoder(mime);
+        MediaCodec c = name != null ? MediaCodec.createByCodecName(name) : MediaCodec.createDecoderByType(mime);
+        try {
+            c.configure(fmt, surface, null, 0);
+            c.start();
+        } catch (RuntimeException e) {
+            c.release();
+            throw e;
+        }
+        Log.i(TAG, "decoding " + codecName + " " + w + "x" + h + " with " + c.getName());
+        codec = c;
+        currentCodec = codecName;
+        decodedAny = false;
         drainThread = new Thread(() -> drain(c), "qwayland-decode");
         drainThread.start();
     }
@@ -302,8 +329,15 @@ final class StreamClient {
                 if (idx >= 0) {
                     c.releaseOutputBuffer(idx, true);
                     framesOut++;
+                    decodedAny = true;
                 }
             } catch (IllegalStateException e) {
+                // A decoder that dies before producing a single frame most
+                // likely can't handle this stream: fall back to another codec.
+                if (e instanceof MediaCodec.CodecException && !decodedAny && c == codec) {
+                    Log.w(TAG, currentCodec + " decoder failed", e);
+                    reportDecoderError(currentCodec + ": " + e.getMessage());
+                }
                 break;
             }
         }

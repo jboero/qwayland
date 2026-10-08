@@ -13,9 +13,9 @@ other screen. Close the panel and the monitor disappears again.
  Linux PC (KDE Plasma, Wayland)                         Meta Quest
 ┌────────────────────────────────────────┐            ┌─────────────────────┐
 │ KWin virtual output "Virtual-qwayland-1"│            │ qwayland panel app  │
-│        │ PipeWire (zkde_screencast)     │   TCP      │  MediaCodec H.264   │
+│        │ PipeWire (zkde_screencast)     │   TCP      │  MediaCodec (HW,    │
 │        ▼                                │ ─────────▶ │  low-latency decode │
-│ cudaconvert → NVENC H.264 ──────────────┼─ video ──▶ │  → panel surface    │
+│ cudaconvert → NVENC AV1/HEVC/H.264 ─────┼─ video ──▶ │  low-latency) → panel│
 │                                         │            │                     │
 │ org_kde_kwin_fake_input  ◀──────────────┼─ input ─── │ pointer/keys/text   │
 └────────────────────────────────────────┘            └─────────────────────┘
@@ -32,8 +32,8 @@ Known gaps:
 
 - Only KDE Plasma 6 (KWin) is supported; GNOME/wlroots would need a different
   virtual-output backend.
-- Encoding uses NVENC when available and falls back to x264 (CPU) otherwise.
-  VAAPI (Intel/AMD) is not wired up yet.
+- Encoding needs an NVIDIA GPU for AV1/HEVC (NVENC); without one only H.264
+  via x264 (CPU) is available. VAAPI (Intel/AMD) is not wired up yet.
 - The panel is a regular 2D Horizon OS panel. A direct-to-compositor OpenXR
   layer would give sharper text; not done yet.
 - No authentication or encryption: run it on a trusted network only.
@@ -41,7 +41,7 @@ Known gaps:
 ## Requirements
 
 PC: KDE Plasma 6 on Wayland, PipeWire, GStreamer ≥ 1.22 with
-`pipewiresrc`, `nvh264enc` and the CUDA elements (`gstreamer1-plugins-bad`),
+`pipewiresrc`, the NVIDIA/CUDA elements (`gstreamer1-plugins-bad`),
 Python 3 with PyGObject, `avahi-publish-service`, `kscreen-doctor`.
 To build: a C compiler, `wayland-devel`, `plasma-wayland-protocols-devel`
 (Fedora package names).
@@ -74,12 +74,41 @@ A Bluetooth keyboard or mouse paired with the headset also works.
 
 ```
 qwayland-server [--port 7710] [--width 2560 --height 1440] [--scale 1.0]
-                [--fps 60] [--bitrate 40000] [--name NAME] [-v]
+                [--fps 60] [--bitrate KBPS] [--codecs av1,h265,h264]
+                [--name NAME] [--no-advertise] [-v]
 ```
 
 The panel can request its own size and scale. These can be set per panel with
 `adb shell am start -n org.qwayland.client/.DisplayActivity --ei width 1920
 --ei height 1080`.
+
+## Video codecs
+
+The panel tells the server which codecs the headset can decode in hardware.
+The server picks the first one in its `--codecs` order (default
+`av1,h265,h264`) that it can also encode. The Quest 3 decodes all three, using
+Qualcomm's dedicated low-latency decoders. If an encoder fails to start, or
+the headset reports it can't decode the stream, the server moves down the
+list, ending at H.264.
+
+AV1 is the default because desktop content compresses much better with it.
+Measured with NVENC on scrolling text plus a moving window at 2560×1440:
+
+| Bitrate  | H.264   | HEVC    | AV1     |
+|----------|---------|---------|---------|
+| 3 Mbit/s | 32.7 dB | 35.3 dB | 36.2 dB |
+| 6 Mbit/s | 39.5 dB | 43.4 dB | 45.1 dB |
+| 12 Mbit/s| 45.9 dB | 49.2 dB | 52.0 dB |
+
+(mean PSNR-Y; AV1 at ~6 Mbit/s matches H.264 at 12.) Default bitrates are
+20 / 28 / 40 Mbit/s for AV1 / HEVC / H.264 at 1440p, scaled by resolution;
+`--bitrate` overrides them.
+
+AV1 needs an RTX 40-series or newer GPU. GStreamer's `nvav1enc` is used when
+present (the server initialises CUDA first, because the plugin only registers
+it after that). Otherwise the server falls back to FFmpeg's `av1_nvenc`
+through [PyAV](https://pypi.org/project/av/) if it's installed
+(`pip install av numpy`).
 
 ## How it works
 
@@ -88,7 +117,7 @@ The panel can request its own size and scale. These can be set per panel with
   (KWin hands back a PipeWire node per monitor) and
   `org_kde_kwin_fake_input` to inject pointer, keys and keysyms.
 * `server/qwayland_server.py`: asyncio server. It handles discovery, one
-  GStreamer pipeline per panel (`pipewiresrc → cudaconvert → nvh264enc →
+  GStreamer pipeline per panel (`pipewiresrc → cudaconvert → nvav1enc / nvh265enc / nvh264enc →
   appsink`), frame dropping with keyframe resync when the network can't keep up,
   and explicit KScreen layout so displays line up right of your real monitors.
   The wire protocol is documented at the top of the file.
