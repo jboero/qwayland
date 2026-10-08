@@ -2,6 +2,8 @@
 
 Extra monitors for your KDE Plasma (Wayland) desktop, floating in a Meta Quest.
 
+<img width="3840" height="2160" alt="com oculus vrshell-20261008-131706" src="https://github.com/user-attachments/assets/52df1e31-28da-424b-8c4b-b3fff4cac62d" />
+
 Each panel you open in the headset becomes a real, separate monitor on the
 Linux desktop: KWin creates a virtual output of the requested size, so windows
 can be dragged onto it, maximized on it, and arranged in System Settings like any
