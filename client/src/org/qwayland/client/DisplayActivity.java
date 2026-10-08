@@ -55,7 +55,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
     private String panelId;
     private int streamWidth, streamHeight;
     private boolean surfaceReady;
-    private boolean resumed;
+    private boolean visible;
     private int pressedButton;
 
     private NsdManager nsd;
@@ -128,17 +128,21 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
         out.putString(EXTRA_PANEL, panelId);
     }
 
+    // Connect while the panel is visible, not just while it is focused:
+    // Horizon OS pauses panels whenever focus moves elsewhere (system menu,
+    // another panel), and dropping the connection then would destroy the
+    // virtual display and throw its windows back onto the other monitors.
     @Override
-    protected void onResume() {
-        super.onResume();
-        resumed = true;
+    protected void onStart() {
+        super.onStart();
+        visible = true;
         maybeConnect();
     }
 
     @Override
-    protected void onPause() {
-        super.onPause();
-        resumed = false;
+    protected void onStop() {
+        super.onStop();
+        visible = false;
         disconnect();
         stopDiscovery();
     }
@@ -177,7 +181,7 @@ public class DisplayActivity extends Activity implements StreamClient.Listener, 
     // ---- connection ----
 
     private void maybeConnect() {
-        if (!resumed || !surfaceReady || client != null) return;
+        if (!visible || !surfaceReady || client != null) return;
         if (host == null) {
             startDiscovery();
             return;

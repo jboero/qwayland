@@ -53,6 +53,10 @@ MSG_HELLO, MSG_POINTER, MSG_BUTTON, MSG_SCROLL, MSG_KEY, MSG_KEYFRAME, MSG_PING,
 
 HEADER = struct.Struct("<BI")
 MAX_PAYLOAD = 64 * 1024 * 1024
+# A live panel pings every few seconds. If the headset goes quiet (asleep,
+# frozen, out of range) drop its display rather than leaving a monitor nobody
+# can see attached to the desktop.
+CLIENT_TIMEOUT = 20
 
 
 def _die_with_parent():
@@ -366,7 +370,11 @@ class Session:
     async def _handle_input(self, pump):
         vout = self.server.vout
         while not pump.done():
-            mtype, payload = await self.read_msg()
+            try:
+                mtype, payload = await asyncio.wait_for(self.read_msg(), CLIENT_TIMEOUT)
+            except asyncio.TimeoutError:
+                log.info("%s: no messages for %ds, closing display", self.peer, CLIENT_TIMEOUT)
+                return
             if log.isEnabledFor(logging.DEBUG) and mtype != MSG_POINTER:
                 log.debug("%s: input 0x%02x %s", self.peer, mtype, payload.hex())
             if mtype == MSG_POINTER:
